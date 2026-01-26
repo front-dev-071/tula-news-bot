@@ -134,7 +134,11 @@ class GoogleNewsSource(NewsSource):
         from dateutil import parser
         from datetime import datetime
         try:
-            return parser.parse(date_str)
+            parsed_date = parser.parse(date_str)
+            # Убираем timezone информацию для консистентности
+            if parsed_date.tzinfo is not None:
+                return parsed_date.replace(tzinfo=None)
+            return parsed_date
         except (ValueError, TypeError) as e:
             logger.warning(f"Ошибка парсинга даты '{date_str}': {e}")
             return datetime.now()
@@ -151,7 +155,7 @@ class GoogleNewsSource(NewsSource):
         score: float = 0.0
         
         # Проверяем наличие ключевых слов
-        keywords = ['тула', 'тульск', 'област']
+        keywords = ['тула', 'туле', 'тульск', 'област']
         for keyword in keywords:
             if keyword in title or keyword in summary:
                 score += 0.3
