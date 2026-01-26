@@ -6,20 +6,32 @@ from loguru import logger
 
 from .models import NewsArticle
 from .sources import NewsSourceFactory
+from .cache import NewsCache
 from ..core.config import config
 
 
 class NewsCollector:
-    """Основной класс для сбора новостей"""
+    """Основной класс для сбора новостей с кэшированием"""
     
-    def __init__(self, source_type: str = "google"):
+    def __init__(self, source_type: str = "google", use_cache: bool = True):
         """Инициализация коллектора"""
         self.source = NewsSourceFactory.create_source(source_type)
         self.storage_path = config.storage_path
-        logger.info(f"NewsCollector инициализирован с источником: {source_type}")
+        self.cache = NewsCache() if use_cache else None
+        logger.info(f"NewsCollector инициализирован с источником: {source_type}, кэш: {'включен' if use_cache else 'выключен'}")
     
-    def collect(self, query: str = None, limit: int = None) -> List[NewsArticle]:
-        """Сбор новостей"""
+    def collect(self, query: str = None, limit: int = None, force_refresh: bool = False) -> List[NewsArticle]:
+        """
+        Сбор новостей с поддержкой кэширования
+        
+        Args:
+            query: Поисковый запрос
+            limit: Лимит новостей
+            force_refresh: Принудительное обновление без кэша
+            
+        Returns:
+            Список новостей
+        """
         if query is None:
             query = config.news.default_region
         
@@ -28,12 +40,24 @@ class NewsCollector:
         
         logger.info(f"Начинаем сбор новостей. Запрос: '{query}', лимит: {limit}")
         
-        # Получаем новости
+        # Проверяем кэш если не принудительное обновление
+        if not force_refresh and self.cache:
+            cached_articles = self.cache.get(query, limit)
+            if cached_articles:
+                logger.info(f"Используем кэшированные результаты: {len(cached_articles)} новостей")
+                return cached_articles
+        
+        # Получаем новости из источника
         articles = self.source.fetch_news(query, limit)
         
         if articles:
             # Сохраняем в файл
             self._save_to_file(articles)
+            
+            # Сохраняем в кэш
+            if self.cache:
+                self.cache.put(query, limit, articles)
+            
             logger.success(f"Собрано и сохранено {len(articles)} новостей")
         else:
             logger.warning("Новости не найдены")
@@ -72,3 +96,18 @@ class NewsCollector:
             data = json.load(f)
         
         return [NewsArticle.from_dict(article) for article in data["articles"]]
+    
+    def clear_cache(self):
+        """Очистка кэша"""
+        if self.cache:
+            self.cache.clear()
+            logger.info("Кэш очищен")
+        else:
+            logger.warning("Кэш не используется")
+    
+    def get_cache_stats(self):
+        """Получение статистики кэша"""
+        if self.cache:
+            return self.cache.get_stats()
+        else:
+            return {"message": "Кэш не используется"}

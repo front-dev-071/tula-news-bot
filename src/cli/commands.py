@@ -8,8 +8,8 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from loguru import logger
 
-from ..news.collector import NewsCollector
 from ..news.models import NewsArticle
+from ..services.news_service import NewsService
 from ..core.config import config
 
 # Создаем Typer приложение
@@ -21,8 +21,8 @@ app = typer.Typer(
 
 console = Console()
 
-# Инициализируем коллектор
-collector = NewsCollector()
+# Инициализируем сервис
+news_service = NewsService()
 
 
 def _display_news_table(articles: List[NewsArticle], title: str = "Новости"):
@@ -100,6 +100,11 @@ def collect(
         True,
         "--show/--no-show",
         help="Показать результат после сбора"
+    ),
+    force_refresh: bool = typer.Option(
+        False,
+        "--force-refresh",
+        help="Принудительно обновить без использования кэша"
     )
 ):
     """Собрать свежие новости"""
@@ -115,8 +120,8 @@ def collect(
             total=None
         )
         
-        # Собираем новости
-        articles = collector.collect(query, limit)
+        # Собираем новости через сервис
+        articles = news_service.collect_news(query, limit, force_refresh)
         
         progress.update(task, completed=True)
     
@@ -146,23 +151,17 @@ def show(
 ):
     """Показать последние сохраненные новости"""
     
-    # Загружаем новости
-    articles = collector.load_latest()
+    # Загружаем новости через сервис
+    articles = news_service.get_latest_news(limit)
     
     if not articles:
         console.print("[red]Нет сохраненных новостей. Сначала выполните collect.[/red]")
         return
     
-    # Сортируем
-    if sort_by == "relevance":
-        articles.sort(key=lambda x: x.relevance_score, reverse=True)
-    elif sort_by == "source":
+    # Дополнительная сортировка если нужно
+    if sort_by == "source":
         articles.sort(key=lambda x: x.source)
-    else:  # date
-        articles.sort(key=lambda x: x.published_at, reverse=True)
-    
-    # Ограничиваем количество
-    articles = articles[:limit]
+    # Сервис уже сортирует по релевантности и дате
     
     # Показываем
     _display_news_table(articles, "Сохраненные новости")
@@ -172,57 +171,119 @@ def show(
 def stats():
     """Показать статистику"""
     
-    json_files = list(config.storage_path.glob("news_*.json"))
+    # Получаем статистику через сервис
+    stats_data = news_service.get_statistics()
     
-    if not json_files:
-        console.print("[yellow]Еще нет собранных новостей[/yellow]")
+    if "message" in stats_data:
+        console.print(f"[yellow]{stats_data['message']}[/yellow]")
         return
-    
-    # Загружаем последний файл для детальной статистики
-    articles = collector.load_latest()
     
     # Общая статистика
     table = Table(title="[bold cyan]📈 Общая статистика[/bold cyan]")
     table.add_column("Показатель", style="bold")
     table.add_column("Значение", style="green")
     
-    table.add_row("Всего сборов", str(len(json_files)))
-    table.add_row("Последний сбор", json_files[-1].stem.replace("news_", ""))
+    table.add_row("Всего новостей", str(stats_data["total_articles"]))
     
-    # Безопасно подсчитываем общее количество новостей
-    total_news = 0
-    for json_file in json_files:
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                total_news += len(data.get("articles", []))
-        except (json.JSONDecodeError, KeyError, IOError) as e:
-            logger.warning(f"Ошибка при чтении файла {json_file}: {e}")
-            continue
+    if "date_range" in stats_data:
+        table.add_row("Период", f"{stats_data['date_range']['earliest'][:10]} - {stats_data['date_range']['latest'][:10]}")
     
-    table.add_row("Всего новостей", str(total_news))
-    table.add_row("Последних новостей", str(len(articles)))
-    
-    if articles:
-        table.add_row("Источников", str(len(set(a.source for a in articles))))
-        table.add_row("Первая новость", articles[-1].published_at.strftime("%d.%m.%Y"))
-        table.add_row("Последняя новость", articles[0].published_at.strftime("%d.%m.%Y"))
+    if "relevance" in stats_data:
+        rel = stats_data["relevance"]
+        table.add_row("Высокая релевантность", str(rel["high"]))
+        table.add_row("Средняя релевантность", str(rel["medium"]))
+        table.add_row("Низкая релевантность", str(rel["low"]))
     
     console.print(table)
     
     # Статистика по источникам
-    if articles:
-        from collections import Counter
-        source_counts = Counter(article.source for article in articles)
-        
+    if "sources" in stats_data and stats_data["sources"]:
         table = Table(title="[bold cyan]📊 По источникам[/bold cyan]")
         table.add_column("Источник", style="bold")
         table.add_column("Количество", style="green")
         
-        for source, count in source_counts.most_common():
+        for source, count in sorted(stats_data["sources"].items(), key=lambda x: x[1], reverse=True):
             table.add_row(source, str(count))
         
         console.print(table)
+    
+    # Статистика кэша
+    if "cache" in stats_data:
+        cache = stats_data["cache"]
+        table = Table(title="[bold cyan]💾 Кэш[/bold cyan]")
+        table.add_column("Параметр", style="bold")
+        table.add_column("Значение", style="green")
+        
+        table.add_row("Файлов в кэше", str(cache.get("total_files", 0)))
+        table.add_row("Актуальных файлов", str(cache.get("valid_files", 0)))
+        table.add_row("Размер кэша", f"{cache.get('total_size_mb', 0)} MB")
+        table.add_row("TTL", f"{cache.get('ttl_hours', 0)} ч")
+        
+        console.print(table)
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Поисковый запрос"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Лимит результатов"),
+    min_relevance: float = typer.Option(0.0, "--min-relevance", help="Минимальная релевантность (0-1)")
+):
+    """Поиск новостей по запросу"""
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task(
+            description=f"[cyan]Ищем новости: {query}[/cyan]",
+            total=None
+        )
+        
+        articles = news_service.search_news(query, limit, min_relevance)
+        progress.update(task, completed=True)
+    
+    if articles:
+        _display_news_table(articles, f"Результаты поиска: {query}")
+    else:
+        console.print(f"[yellow]Новостей по запросу '{query}' не найдено[/yellow]")
+
+
+@app.command()
+def export(
+    format_type: str = typer.Option("json", "--format", "-f", help="Формат экспорта (json, csv, txt)"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Количество новостей")
+):
+    """Экспорт новостей в файл"""
+    
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            
+            task = progress.add_task(
+                description=f"[cyan]Экспортируем новости в {format_type}[/cyan]",
+                total=None
+            )
+            
+            filename = news_service.export_news(format_type, limit)
+            progress.update(task, completed=True)
+        
+        console.print(f"[green]✅ Новости экспортированы в: {filename}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]❌ Ошибка экспорта: {e}[/red]")
+
+
+@app.command()
+def clear_cache():
+    """Очистить кэш новостей"""
+    
+    news_service.clear_cache()
+    console.print("[green]✅ Кэш очищен[/green]")
 
 
 @app.command()

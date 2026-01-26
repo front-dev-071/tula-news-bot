@@ -1,14 +1,65 @@
+import time
+import random
+from functools import wraps
+from typing import Callable, Any, Optional, Type, Union
+from datetime import datetime
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List
 from loguru import logger
 
 from .models import NewsArticle
 from ..core.config import config
 
 
+def retry_on_failure(
+    max_attempts: int = 3,
+    delay: float = 1.0,
+    backoff: float = 2.0,
+    exceptions: tuple = (Exception,)
+):
+    """Декоратор для повторных попыток при ошибках"""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> Any:
+            last_exception = None
+            
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt == max_attempts - 1:
+                        logger.error(f"{func.__name__} не удался после {max_attempts} попыток. Последняя ошибка: {e}")
+                        raise
+                    
+                    wait_time = delay * (backoff ** attempt) + random.uniform(0, 0.1)
+                    logger.warning(f"{func.__name__} попытка {attempt + 1} не удалась: {e}. Повтор через {wait_time:.1f}с")
+                    time.sleep(wait_time)
+            
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+class NetworkError(Exception):
+    """Базовый класс для сетевых ошибок"""
+    pass
+
+
+class TimeoutError(NetworkError):
+    """Ошибка таймаута"""
+    pass
+
+
+class ConnectionError(NetworkError):
+    """Ошибка подключения"""
+    pass
+
+
 class NewsSource(ABC):
     """Абстрактный класс источника новостей"""
     
+    @retry_on_failure(max_attempts=3, delay=1.0, exceptions=(TimeoutError, ConnectionError, NetworkError))
     @abstractmethod
     def fetch_news(self, query: Optional[str] = None, limit: int = 10) -> List[NewsArticle]:
         """Получение новостей из источника"""
@@ -33,6 +84,7 @@ class GoogleNewsSource(NewsSource):
             logger.error("PyGoogleNews не установлен. Установите: pip install pygooglenews")
             raise
     
+    @retry_on_failure(max_attempts=3, delay=2.0, exceptions=(TimeoutError, ConnectionError, NetworkError))
     def fetch_news(self, query: Optional[str] = None, limit: int = 10) -> List[NewsArticle]:
         """Получение новостей из Google News"""
         if query is None:
@@ -59,6 +111,9 @@ class GoogleNewsSource(NewsSource):
                     articles.append(article)
                     logger.debug(f"Найдена новость: {article.title[:50]}...")
                     
+                except ValueError as e:
+                    logger.warning(f"Ошибка валидации новости: {e}")
+                    continue
                 except Exception as e:
                     logger.warning(f"Ошибка обработки новости: {e}")
                     continue
@@ -67,8 +122,12 @@ class GoogleNewsSource(NewsSource):
             return articles
             
         except Exception as e:
-            logger.error(f"Ошибка при поиске новостей: {e}")
-            return []
+            if "timeout" in str(e).lower():
+                raise TimeoutError(f"Таймаут при поиске новостей: {e}")
+            elif "connection" in str(e).lower() or "network" in str(e).lower():
+                raise ConnectionError(f"Ошибка подключения: {e}")
+            else:
+                raise NetworkError(f"Ошибка при поиске новостей: {e}")
     
     def _parse_date(self, date_str: str) -> datetime:
         """Парсинг даты из строки"""
