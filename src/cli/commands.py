@@ -1,5 +1,6 @@
 from typing import Optional, List
 from datetime import datetime
+import json
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -187,7 +188,19 @@ def stats():
     
     table.add_row("Всего сборов", str(len(json_files)))
     table.add_row("Последний сбор", json_files[-1].stem.replace("news_", ""))
-    table.add_row("Всего новостей", str(sum(len(json.load(open(f))["articles"]) for f in json_files)))
+    
+    # Безопасно подсчитываем общее количество новостей
+    total_news = 0
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                total_news += len(data.get("articles", []))
+        except (json.JSONDecodeError, KeyError, IOError) as e:
+            logger.warning(f"Ошибка при чтении файла {json_file}: {e}")
+            continue
+    
+    table.add_row("Всего новостей", str(total_news))
     table.add_row("Последних новостей", str(len(articles)))
     
     if articles:

@@ -70,22 +70,26 @@ class GoogleNewsSource(NewsSource):
             logger.error(f"Ошибка при поиске новостей: {e}")
             return []
     
-    def _parse_date(self, date_str: str):
+    def _parse_date(self, date_str: str) -> datetime:
         """Парсинг даты из строки"""
         from dateutil import parser
+        from datetime import datetime
         try:
             return parser.parse(date_str)
-        except:
-            from datetime import datetime
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Ошибка парсинга даты '{date_str}': {e}")
+            return datetime.now()
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при парсинге даты '{date_str}': {e}")
             return datetime.now()
     
     def _calculate_relevance(self, entry: dict, query: str) -> float:
         """Вычисление релевантности новости"""
-        title = entry.get('title', '').lower()
-        summary = entry.get('summary', '').lower()
-        query_lower = query.lower()
+        title: str = entry.get('title', '').lower()
+        summary: str = entry.get('summary', '').lower()
+        query_lower: str = query.lower()
         
-        score = 0.0
+        score: float = 0.0
         
         # Проверяем наличие ключевых слов
         keywords = ['тула', 'тульск', 'област']
