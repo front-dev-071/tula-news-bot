@@ -39,15 +39,15 @@ def _display_news_table(articles: List[NewsArticle], title: str = "Новост�
     
     # Добавляем колонки
     table.add_column("№", style="dim", width=4)
-    table.add_column("Заголовок", style="bold", width=60)
-    table.add_column("Источник", style="green", width=20)
-    table.add_column("Дата", style="yellow", width=15)
-    table.add_column("Релевантность", style="red", width=12)
+    table.add_column("Заголовок", style="bold", width=70)
+    table.add_column("Источник", style="green", width=15)
+    table.add_column("Дата", style="yellow", width=12)
+    table.add_column("Релевантность", style="red", width=10)
     
     # Добавляем строки
     for i, article in enumerate(articles, 1):
         # Форматируем дату
-        date_str = article.published_at.strftime("%d.%m.%Y")
+        date_str = article.published_at.strftime("%d.%m")
         
         # Форматируем релевантность
         relevance = "🔴 Низкая"
@@ -56,7 +56,7 @@ def _display_news_table(articles: List[NewsArticle], title: str = "Новост�
         elif article.relevance_score > 0.4:
             relevance = "🟡 Средняя"
         
-        # Обрезаем длинный заголовок
+        # Обрезаем длинный заголовок, но оставляем больше символов
         title = article.title
         if len(title) > 80:
             title = title[:77] + "..."
@@ -64,7 +64,7 @@ def _display_news_table(articles: List[NewsArticle], title: str = "Новост�
         table.add_row(
             str(i),
             title,
-            article.source,
+            article.source[:12] + "..." if len(article.source) > 12 else article.source,
             date_str,
             relevance
         )
@@ -128,12 +128,50 @@ def collect(
     if show and articles:
         _display_news_table(articles, "Собранные новости")
         
-        # Ссылки на новости
+        # Ссылки на новости с кликабельными заголовками
         console.print("\n[bold]🔗 Ссылки на новости:[/bold]")
-        for i, article in enumerate(articles[:5], 1):  # Показываем первые 5
-            console.print(f"{i}. [link={article.url}]{article.title[:50]}...[/link]")
+        for i, article in enumerate(articles, 1):  # Показываем все новости как в таблице
+            # Кликабельный заголовок с ссылкой
+            console.print(f"{i}. [link={article.url}][blue underline]{article.title}[/blue underline][/link]")
+            console.print()
     
     return articles
+
+
+@app.command()
+def links(
+    limit: int = typer.Option(
+        10,
+        "--limit", "-l",
+        help="Количество новостей для показа"
+    )
+):
+    """Показать новости с кликабельными ссылками"""
+    
+    # Загружаем новости через сервис
+    articles = news_service.get_latest_news(limit)
+    
+    if not articles:
+        console.print("[red]Нет сохраненных новостей. Сначала выполните collect.[/red]")
+        return
+    
+    console.print(f"\n[bold cyan]📰 Новости с кликабельными ссылками[/bold cyan]\n")
+    
+    for i, article in enumerate(articles, 1):
+        # Кликабельный заголовок
+        console.print(f"[bold]{i}. [link={article.url}][blue underline]{article.title}[/blue underline][/link][/bold]")
+        
+        # Метаданные
+        console.print(f"   [green]Источник:[/green] {article.source} | "
+                     f"[yellow]Дата:[/yellow] {article.published_at.strftime('%d.%m.%Y %H:%M')} | "
+                     f"[red]Релевантность:[/red] {article.relevance_score:.2f}")
+        
+        # Краткое содержание если есть
+        if article.summary and len(article.summary.strip()) > 10:
+            summary = article.summary[:150] + "..." if len(article.summary) > 150 else article.summary
+            console.print(f"   [dim]{summary}[/dim]")
+        
+        console.print()  # Пустая строка между новостями
 
 
 @app.command()
